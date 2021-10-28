@@ -23,7 +23,7 @@ export default async (event): Promise<any> => {
 	await s3.writeFile(
 		gzippedNewResults,
 		'static.zerotoheroes.com',
-		'api/mercenaries-global-stats.gz.json',
+		'api/mercenaries-global-stats.temp.gz.json',
 		'application/json',
 		'gzip',
 	);

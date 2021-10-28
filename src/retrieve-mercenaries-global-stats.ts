@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
-import { AllCardsService, TagRole } from '@firestone-hs/reference-data';
+import { AllCardsService, ScenarioId, TagRole } from '@firestone-hs/reference-data';
 import { ServerlessMysql } from 'serverless-mysql';
 import {
 	MercenariesComposition,
@@ -11,7 +11,7 @@ import {
 	MmrPercentile,
 	SkillInfo,
 } from './stat';
-import { groupByFunction, http, sumOnArray } from './utils/util-functions';
+import { groupByFunction, sumOnArray } from './utils/util-functions';
 
 const allCards = new AllCardsService();
 
@@ -23,29 +23,30 @@ export const loadNewStats = async (mysql: ServerlessMysql): Promise<MercenariesG
 
 	return {
 		lastUpdateDate: new Date(),
-		pve: buildPvE(rows.filter(row => !!row.difficulty)),
-		pvp: buildPvP(rows.filter(row => row.rating != null)),
+		pvp: buildPvP(rows.filter(row => row.scenarioId === ScenarioId.LETTUCE_PVP)),
 	};
 };
 
 const buildPvP = (rows: MercenariesDbRow[]): MercenariesPvp => {
 	const mmrPercentiles: readonly MmrPercentile[] = buildMmrPercentiles(rows);
+
+	const grouped: { [groupingKey: string]: readonly MercenariesDbRow[] } = groupByFunction(
+		(row: MercenariesDbRow) =>
+			`${row.heroCardId}-${row.equipmentCardId}-${row.battleEnterTiming === 0}-${clampHeroLevel(row.heroLevel)}`,
+	)(rows);
+	console.debug('grouped for hero stats');
 	const heroStats: readonly MercenariesHeroStat[] = mmrPercentiles
-		.map(percentile =>
-			buildHeroStatsForDifficulty(
-				rows.filter(row => row.rating >= percentile.mmr),
-				percentile.percentile,
-			),
-		)
+		.map(percentile => buildHeroStatsForDifficulty(grouped, percentile))
 		.reduce((a, b) => [...a, ...b], []);
+
+	const groupedByMatch: { [groupingKey: string]: readonly MercenariesDbRow[] } = groupByFunction(
+		(row: MercenariesDbRow) => row.reviewId,
+	)(rows);
+	console.debug('grouped for compositions');
 	const compositions: readonly MercenariesComposition[] = mmrPercentiles
-		.map(percentile =>
-			buildCompositionsForDifficulty(
-				rows.filter(row => row.rating >= percentile.mmr),
-				percentile.percentile,
-			),
-		)
+		.map(percentile => buildCompositionsForDifficulty(groupedByMatch, percentile))
 		.reduce((a, b) => [...a, ...b], []);
+
 	return {
 		mmrPercentiles: mmrPercentiles,
 		heroStats: heroStats,
@@ -53,62 +54,134 @@ const buildPvP = (rows: MercenariesDbRow[]): MercenariesPvp => {
 	};
 };
 
-const buildPvE = (rows: MercenariesDbRow[]): MercenariesPve => {
-	const heroStats: readonly MercenariesHeroStat[] = ['normal', 'heroic', 'legendary']
-		.map(difficulty =>
-			buildHeroStatsForDifficulty(
-				rows.filter(row => row.difficulty === difficulty),
-				difficulty,
-			),
-		)
-		.reduce((a, b) => [...a, ...b], []);
-	const compositions: readonly MercenariesComposition[] = ['normal', 'heroic', 'legendary']
-		.map(difficulty =>
-			buildCompositionsForDifficulty(
-				rows.filter(row => row.difficulty === difficulty),
-				difficulty,
-			),
-		)
-		.reduce((a, b) => [...a, ...b], []);
-	return {
-		heroStats: heroStats,
-		compositions: compositions,
-	};
+const buildHeroStatsForDifficulty = (
+	grouped: { [groupingKey: string]: readonly MercenariesDbRow[] },
+	difficulty: MmrPercentile,
+): readonly MercenariesHeroStat[] => {
+	const pastThree = buildHeroStats(
+		grouped,
+		row =>
+			row.startDate >= new Date(new Date().getTime() - 3 * 24 * 60 * 60 * 1000) && row.rating >= difficulty.mmr,
+		difficulty.percentile,
+		'past-three',
+	);
+
+	console.log('built stats for', 'past-three', difficulty, pastThree.length);
+	const pastSeven = buildHeroStats(
+		grouped,
+		row =>
+			row.startDate >= new Date(new Date().getTime() - 7 * 24 * 60 * 60 * 1000) && row.rating >= difficulty.mmr,
+		difficulty.percentile,
+		'past-seven',
+	);
+	console.log('built stats for', 'past-seven', difficulty, pastSeven.length);
+	return [...pastThree, ...pastSeven];
 };
 
-const buildCompositionsForDifficulty = (rows: MercenariesDbRow[], difficulty): readonly MercenariesComposition[] => {
-	const allTimeStats = buildCompositions(rows, difficulty, 'all-time');
-	console.log('built compositions for', difficulty, allTimeStats.length, rows.length);
-	return [...allTimeStats];
+const buildHeroStats = (
+	grouped: { [groupingKey: string]: readonly MercenariesDbRow[] },
+	rowFilter: (stat: MercenariesDbRow) => boolean,
+	difficulty: 100 | 50 | 25 | 10 | 1,
+	period: string,
+): readonly MercenariesHeroStat[] => {
+	return Object.values(grouped)
+		.map(groupedRows => {
+			const valid = groupedRows.filter(stat => rowFilter(stat));
+			if (!valid?.length) {
+				return null;
+			}
+			const ref = valid[0];
+			const uniqueSkills = [
+				...new Set(
+					valid
+						.map(row => [row.firstSkillCardId, row.secondSkillCardId, row.thirdSkillCardId])
+						.reduce((a, b) => a.concat(b), []),
+				),
+			]
+				.filter(cardId => cardId)
+				.sort();
+			const skillInfos = uniqueSkills
+				.map(skillCardId => valid.map(row => getSkill(row, skillCardId)))
+				.reduce((a, b) => a.concat(b), [])
+				.filter(skill => !!skill);
+			const groupedSkillInfos = groupByFunction((skill: SkillInfo) => skill.cardId)(skillInfos);
+			const mergedSkillInfos: readonly SkillInfo[] = Object.values(groupedSkillInfos).map(skillInfos => {
+				const ref = skillInfos[0];
+				return {
+					cardId: ref.cardId,
+					numberOfMatches: sumOnArray(skillInfos, skill => skill.numberOfMatches),
+					numberOfTimesUsed: sumOnArray(skillInfos, skill => skill.numberOfTimesUsed),
+				};
+			});
+			return {
+				date: period,
+				mmrPercentile: difficulty,
+				heroCardId: ref.heroCardId,
+				heroRole: convertRole(allCards.getCard(ref.heroCardId).mercenaryRole),
+				heroLevel: clampHeroLevel(ref.heroLevel),
+				starter: ref.battleEnterTiming === 1,
+				equipementCardId: ref.equipmentCardId,
+				totalMatches: valid.length,
+				totalWins: valid.filter(row => row.result === 'won').length,
+				totalLosses: valid.filter(row => row.result === 'lost').length,
+				skillInfos: mergedSkillInfos,
+			} as MercenariesHeroStat;
+		})
+		.filter(info => !!info);
 };
 
-const buildHeroStatsForDifficulty = (rows: MercenariesDbRow[], difficulty): readonly MercenariesHeroStat[] => {
-	const allTimeStats = buildHeroStats(rows, difficulty, 'all-time');
-	console.log('built stats for', difficulty, allTimeStats.length, rows.length);
-	return [...allTimeStats];
+const buildCompositionsForDifficulty = (
+	groupedByMatch: { [groupingKey: string]: readonly MercenariesDbRow[] },
+	difficulty: MmrPercentile,
+): readonly MercenariesComposition[] => {
+	const pastThree = buildCompositions(
+		groupedByMatch,
+		row =>
+			row.startDate >= new Date(new Date().getTime() - 3 * 24 * 60 * 60 * 1000) && row.rating >= difficulty.mmr,
+		difficulty.percentile,
+		'past-three',
+	);
+	console.log('built compositions for', 'past-three', difficulty, pastThree.length);
+	const pastSeven = buildCompositions(
+		groupedByMatch,
+		row =>
+			row.startDate >= new Date(new Date().getTime() - 7 * 24 * 60 * 60 * 1000) && row.rating >= difficulty.mmr,
+		difficulty.percentile,
+		'past-seven',
+	);
+	console.log('built compositions for', 'past-seven', difficulty, pastSeven.length);
+	return [...pastThree, ...pastSeven];
 };
 
 const buildCompositions = (
-	rows: readonly MercenariesDbRow[],
-	difficulty: string,
+	groupedByMatch: { [groupingKey: string]: readonly MercenariesDbRow[] },
+	rowFilter: (stat: MercenariesDbRow) => boolean,
+	difficulty: 100 | 50 | 25 | 10 | 1,
 	period: string,
 ): readonly MercenariesComposition[] => {
-	const groupedByMatch = groupByFunction((row: MercenariesDbRow) => row.reviewId)(rows);
-	const matchInfos = Object.values(groupedByMatch).map(infos => {
-		const ref = infos[0];
-		return {
-			starterHeroCardIds: infos
-				.filter(info => info.battleEnterTiming === 0)
-				.map(info => info.heroCardId)
-				.sort(),
-			benchHeroCardIds: infos
-				.filter(info => info.battleEnterTiming != 0)
-				.map(info => info.heroCardId)
-				.sort(),
-			result: ref.result,
-		};
-	});
+	const matchInfos = Object.values(groupedByMatch)
+		.map(infos => {
+			const valid = infos.filter(stat => rowFilter(stat));
+			if (!valid?.length) {
+				return null;
+			}
+			const ref = valid[0];
+			return {
+				starterHeroCardIds: valid
+					.filter(info => info.battleEnterTiming === 1)
+					.map(info => info.heroCardId)
+					.sort(),
+				benchHeroCardIds: valid
+					.filter(info => info.battleEnterTiming != 1)
+					.map(info => info.heroCardId)
+					.sort(),
+				result: ref.result,
+			};
+		})
+		.filter(info => !!info);
+	console.debug('\t', 'matchInfos done');
 	const groupedByStarters = groupByFunction((matchInfo: any) => matchInfo.starterHeroCardIds.join(','))(matchInfos);
+	console.debug('\t', 'groupedByStarters done');
 	return Object.values(groupedByStarters)
 		.map(matchInfos => {
 			const ref = matchInfos[0];
@@ -131,6 +204,7 @@ const buildCompositions = (
 						totalLosses: sumOnArray(benches, bench => bench.totalLosses),
 					};
 				})
+				.filter(bench => !!bench.heroCardIds?.length)
 				.sort((a, b) => b.totalWins / b.totalMatches - a.totalWins / a.totalMatches)
 				.slice(0, 10);
 			return {
@@ -144,57 +218,9 @@ const buildCompositions = (
 				benches: benches,
 			} as MercenariesComposition;
 		})
+		.filter(info => !!info)
 		.sort((a, b) => b.totalWins / b.totalMatches - a.totalWins / a.totalMatches)
 		.slice(0, 250);
-};
-
-const buildHeroStats = (
-	rows: readonly MercenariesDbRow[],
-	difficulty: string,
-	period: string,
-): readonly MercenariesHeroStat[] => {
-	const grouped: { [groupingKey: string]: readonly MercenariesDbRow[] } = groupByFunction(
-		(row: MercenariesDbRow) =>
-			`${row.heroCardId}-${row.equipmentCardId}-${row.battleEnterTiming === 0}-${clampHeroLevel(row.heroLevel)}`,
-	)(rows);
-	return Object.values(grouped).map(groupedRows => {
-		const ref = groupedRows[0];
-		const uniqueSkills = [
-			...new Set(
-				groupedRows
-					.map(row => [row.firstSkillCardId, row.secondSkillCardId, row.thirdSkillCardId])
-					.reduce((a, b) => a.concat(b), []),
-			),
-		]
-			.filter(cardId => cardId)
-			.sort();
-		const skillInfos = uniqueSkills
-			.map(skillCardId => groupedRows.map(row => getSkill(row, skillCardId)))
-			.reduce((a, b) => a.concat(b), [])
-			.filter(skill => !!skill);
-		const groupedSkillInfos = groupByFunction((skill: SkillInfo) => skill.cardId)(skillInfos);
-		const mergedSkillInfos: readonly SkillInfo[] = Object.values(groupedSkillInfos).map(skillInfos => {
-			const ref = skillInfos[0];
-			return {
-				cardId: ref.cardId,
-				numberOfMatches: sumOnArray(skillInfos, skill => skill.numberOfMatches),
-				numberOfTimesUsed: sumOnArray(skillInfos, skill => skill.numberOfTimesUsed),
-			};
-		});
-		return {
-			date: period,
-			mmrPercentile: difficulty,
-			heroCardId: ref.heroCardId,
-			heroRole: convertRole(allCards.getCard(ref.heroCardId).mercenaryRole),
-			heroLevel: clampHeroLevel(ref.heroLevel),
-			starter: ref.battleEnterTiming === 1,
-			equipementCardId: ref.equipmentCardId,
-			totalMatches: groupedRows.length,
-			totalWins: groupedRows.filter(row => row.result === 'won').length,
-			totalLosses: groupedRows.filter(row => row.result === 'lost').length,
-			skillInfos: mergedSkillInfos,
-		} as MercenariesHeroStat;
-	});
 };
 
 const convertRole = (role: string): 'caster' | 'fighter' | 'protector' => {
@@ -255,7 +281,7 @@ const buildMmrPercentiles = (rows: readonly MercenariesDbRow[]): readonly MmrPer
 	const top25 = sortedMmrs[Math.floor((sortedMmrs.length / 4) * 3)];
 	const top10 = sortedMmrs[Math.floor((sortedMmrs.length / 10) * 9)];
 	const top1 = sortedMmrs[Math.floor((sortedMmrs.length / 100) * 99)];
-	// console.debug('percentiles', median, top25, top10, top1);
+	console.debug('percentiles', median, top25, top10, top1);
 	return [
 		{
 			percentile: 100,
@@ -281,10 +307,20 @@ const buildMmrPercentiles = (rows: readonly MercenariesDbRow[]): readonly MmrPer
 };
 
 const loadRows = async (mysql: ServerlessMysql): Promise<readonly MercenariesDbRow[]> => {
+	// Don't load data that we won't use
 	const query = `
-		SELECT * FROM duels_stats_by_run
-		WHERE runEndDate > DATE_SUB(NOW(), INTERVAL 100 DAY)
-		AND decklist IS NOT NULL;
+		SELECT 
+			startDate, scenarioId, result, rating, difficulty,
+			reviewId,
+			heroCardId, battleEnterTiming, heroLevel,
+			equipmentCardId, equipmentLevel,
+			firstSkillCardId, firstSkillLevel, firstSkillNumberOfTimesUsed,
+			secondSkillCardId, secondSkillLevel, secondSkillNumberOfTimesUsed,
+			thirdSkillCardId, thirdSkillLevel, thirdSkillNumberOfTimesUsed,
+			bountyId
+		FROM mercenaries_match_stats
+		WHERE startDate > DATE_SUB(NOW(), INTERVAL 7 DAY)
+		AND scenarioId IN (${ScenarioId.LETTUCE_PVP})
 	`;
 	console.log('running query', query);
 	const rows: readonly MercenariesDbRow[] = await mysql.query(query);

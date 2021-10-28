@@ -1,6 +1,6 @@
 export interface MercenariesGlobalStats {
 	readonly lastUpdateDate: Date;
-	readonly pve: MercenariesPve;
+	// readonly pve: MercenariesPve;
 	readonly pvp: MercenariesPvp;
 }
 
