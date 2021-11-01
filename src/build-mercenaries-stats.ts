@@ -4,6 +4,7 @@ import { constants, gzipSync } from 'zlib';
 import { getConnection } from './db/rds';
 import { S3 } from './db/s3';
 import { loadNewStats } from './retrieve-mercenaries-global-stats';
+import { loadNewStatsNoBench } from './retrieve-mercenaries-global-stats-no-bench';
 
 const cards = new AllCardsService();
 const s3 = new S3();
@@ -14,7 +15,8 @@ const s3 = new S3();
 export default async (event): Promise<any> => {
 	await cards.initializeCardsDb();
 	const mysql = await getConnection();
-	const newStats = await loadNewStats(mysql);
+	// const newStats = await loadNewStats(mysql);
+	const newStats = await loadNewStatsNoBench(mysql);
 	await mysql.end();
 
 	const gzippedNewResults = gzipSync(JSON.stringify(newStats), {
@@ -23,10 +25,17 @@ export default async (event): Promise<any> => {
 	await s3.writeFile(
 		gzippedNewResults,
 		'static.zerotoheroes.com',
-		'api/mercenaries-global-stats.temp.gz.json',
+		'api/mercenaries-global-stats-no-bench.gz.json',
 		'application/json',
 		'gzip',
 	);
+	// await s3.writeFile(
+	// 	gzippedNewResults,
+	// 	'static.zerotoheroes.com',
+	// 	'api/mercenaries-global-stats.temp.gz.json',
+	// 	'application/json',
+	// 	'gzip',
+	// );
 
 	return { statusCode: 200, body: null };
 };

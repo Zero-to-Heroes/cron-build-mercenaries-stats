@@ -15,7 +15,7 @@ import { groupByFunction, sumOnArray } from './utils/util-functions';
 
 const allCards = new AllCardsService();
 
-export const loadNewStats = async (mysql: ServerlessMysql): Promise<MercenariesGlobalStats> => {
+export const loadNewStatsNoBench = async (mysql: ServerlessMysql): Promise<MercenariesGlobalStats> => {
 	await allCards.initializeCardsDb();
 	const [lastPatch] = await Promise.all([getLastPatch()]);
 
@@ -170,63 +170,56 @@ const buildCompositions = (
 				return null;
 			}
 			const result = {
-				starterHeroCardIds: valid
-					.filter(info => info.battleEnterTiming === 1)
-					.map(info => info.heroCardId)
-					.sort(),
-				benchHeroCardIds: valid
-					.filter(info => info.battleEnterTiming != 1)
-					.map(info => info.heroCardId)
-					.sort(),
+				heroCardIds: valid.map(info => info.heroCardId).sort(),
 				result: valid[0].result,
 			};
 			if (
-				result.starterHeroCardIds.includes(CardIds.XyrellaLettuce3) &&
-				result.starterHeroCardIds.includes(CardIds.BlademasterSamuroLettuce3) &&
-				result.starterHeroCardIds.includes(CardIds.CairneBloodhoofLettuce3)
+				result.heroCardIds.includes(CardIds.XyrellaLettuce3) &&
+				result.heroCardIds.includes(CardIds.BlademasterSamuroLettuce3) &&
+				result.heroCardIds.includes(CardIds.CairneBloodhoofLettuce3)
 			) {
 				console.debug('found result with BCX', result, ++count);
 			}
 			return result;
 		})
-		.filter(info => !!info && !!info.starterHeroCardIds?.length);
+		.filter(info => !!info && !!info.heroCardIds?.length);
 	console.debug('\t', 'matchInfos done');
-	const groupedByStarters = groupByFunction((matchInfo: any) => matchInfo.starterHeroCardIds.join(','))(matchInfos);
+	const groupedByTeam = groupByFunction((matchInfo: any) => matchInfo.heroCardIds.join(','))(matchInfos);
 	console.debug('\t', 'groupedByStarters done');
-	return Object.values(groupedByStarters)
+	return Object.values(groupedByTeam)
 		.map(matchInfos => {
 			const ref = matchInfos[0];
-			const tempBenches: readonly MercenariesCompositionBench[] = matchInfos.map(matchInfo => ({
-				heroCardIds: matchInfo.benchHeroCardIds,
-				totalMatches: 1,
-				totalWins: matchInfo.result === 'won' ? 1 : 0,
-				totalLosses: matchInfo.result === 'lost' ? 1 : 0,
-			}));
-			const groupedByBench = groupByFunction((bench: MercenariesCompositionBench) => bench.heroCardIds.join(','))(
-				tempBenches,
-			);
-			const benches: readonly MercenariesCompositionBench[] = Object.values(groupedByBench)
-				.map(benches => {
-					const ref = benches[0];
-					return {
-						heroCardIds: ref.heroCardIds,
-						totalMatches: sumOnArray(benches, bench => bench.totalMatches),
-						totalWins: sumOnArray(benches, bench => bench.totalWins),
-						totalLosses: sumOnArray(benches, bench => bench.totalLosses),
-					};
-				})
-				.filter(bench => !!bench.heroCardIds?.length && !!bench.totalMatches)
-				.filter(bench => bench.totalMatches > 5)
-				.sort((a, b) => b.totalWins / b.totalMatches - a.totalWins / a.totalMatches);
+			// const tempBenches: readonly MercenariesCompositionBench[] = matchInfos.map(matchInfo => ({
+			// 	heroCardIds: matchInfo.benchHeroCardIds,
+			// 	totalMatches: 1,
+			// 	totalWins: matchInfo.result === 'won' ? 1 : 0,
+			// 	totalLosses: matchInfo.result === 'lost' ? 1 : 0,
+			// }));
+			// const groupedByBench = groupByFunction((bench: MercenariesCompositionBench) => bench.heroCardIds.join(','))(
+			// 	tempBenches,
+			// );
+			// const benches: readonly MercenariesCompositionBench[] = Object.values(groupedByBench)
+			// 	.map(benches => {
+			// 		const ref = benches[0];
+			// 		return {
+			// 			heroCardIds: ref.heroCardIds,
+			// 			totalMatches: sumOnArray(benches, bench => bench.totalMatches),
+			// 			totalWins: sumOnArray(benches, bench => bench.totalWins),
+			// 			totalLosses: sumOnArray(benches, bench => bench.totalLosses),
+			// 		};
+			// 	})
+			// 	.filter(bench => !!bench.heroCardIds?.length && !!bench.totalMatches)
+			// 	.filter(bench => bench.totalMatches > 5)
+			// 	.sort((a, b) => b.totalWins / b.totalMatches - a.totalWins / a.totalMatches);
 			const result = {
-				stringifiedHeroes: ref.starterHeroCardIds.join(','),
+				stringifiedHeroes: ref.heroCardIds.join(','),
 				date: period,
-				heroCardIds: ref.starterHeroCardIds,
+				heroCardIds: ref.heroCardIds,
 				mmrPercentile: difficulty,
 				totalMatches: matchInfos.length,
 				totalWins: matchInfos.filter(info => info.result === 'won').length,
 				totalLosses: matchInfos.filter(info => info.result === 'lost').length,
-				benches: benches,
+				benches: null,
 			} as MercenariesComposition;
 
 			if (
