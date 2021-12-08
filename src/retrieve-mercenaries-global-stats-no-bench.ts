@@ -3,10 +3,8 @@ import { AllCardsService, CardIds, ScenarioId, TagRole } from '@firestone-hs/ref
 import { ServerlessMysql } from 'serverless-mysql';
 import {
 	MercenariesComposition,
-	MercenariesCompositionBench,
 	MercenariesGlobalStats,
 	MercenariesHeroStat,
-	MercenariesPve,
 	MercenariesPvp,
 	MmrPercentile,
 	SkillInfo,
@@ -93,6 +91,7 @@ const buildHeroStats = (
 				return null;
 			}
 			const ref = valid[0];
+			const debug = ref.heroCardId.startsWith('LT21_03H_0');
 			const uniqueSkills = [
 				...new Set(
 					valid
