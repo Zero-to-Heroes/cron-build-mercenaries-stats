@@ -3,7 +3,6 @@ import { AllCardsService } from '@firestone-hs/reference-data';
 import { constants, gzipSync } from 'zlib';
 import { getConnection } from './db/rds';
 import { S3 } from './db/s3';
-import { loadNewStats } from './retrieve-mercenaries-global-stats';
 import { loadNewStatsNoBench } from './retrieve-mercenaries-global-stats-no-bench';
 
 const cards = new AllCardsService();

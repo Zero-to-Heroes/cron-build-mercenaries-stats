@@ -161,7 +161,6 @@ const buildCompositions = (
 	difficulty: 100 | 50 | 25 | 10 | 1,
 	period: string,
 ): readonly MercenariesComposition[] => {
-	let count = 0;
 	const matchInfos = Object.values(groupedByMatch)
 		.map(infos => {
 			const valid = infos.filter(stat => rowFilter(stat));
@@ -172,13 +171,6 @@ const buildCompositions = (
 				heroCardIds: valid.map(info => info.heroCardId).sort(),
 				result: valid[0].result,
 			};
-			if (
-				result.heroCardIds.includes(CardIds.XyrellaLettuce3) &&
-				result.heroCardIds.includes(CardIds.BlademasterSamuroLettuce3) &&
-				result.heroCardIds.includes(CardIds.CairneBloodhoofLettuce3)
-			) {
-				console.debug('found result with BCX', result, ++count);
-			}
 			return result;
 		})
 		.filter(info => !!info && !!info.heroCardIds?.length);
@@ -220,14 +212,6 @@ const buildCompositions = (
 				totalLosses: matchInfos.filter(info => info.result === 'lost').length,
 				benches: null,
 			} as MercenariesComposition;
-
-			if (
-				result.heroCardIds.includes(CardIds.XyrellaLettuce3) &&
-				result.heroCardIds.includes(CardIds.BlademasterSamuroLettuce3) &&
-				result.heroCardIds.includes(CardIds.CairneBloodhoofLettuce3)
-			) {
-				console.debug('found result with BCX 2', result);
-			}
 			return result;
 		})
 		.filter(info => !!info && info.totalMatches)
