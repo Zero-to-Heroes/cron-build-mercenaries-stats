@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
-import { AllCardsService, CardIds, ScenarioId, TagRole } from '@firestone-hs/reference-data';
+import { groupByFunction, http } from '@firestone-hs/aws-lambda-utils';
+import { AllCardsService, ScenarioId, TagRole } from '@firestone-hs/reference-data';
 import { ServerlessMysql } from 'serverless-mysql';
 import {
 	MercenariesComposition,
@@ -9,23 +10,30 @@ import {
 	MmrPercentile,
 	SkillInfo,
 } from './stat';
-import { groupByFunction, sumOnArray } from './utils/util-functions';
+import { sumOnArray } from './utils/util-functions';
 
 const allCards = new AllCardsService();
 
 export const loadNewStatsNoBench = async (mysql: ServerlessMysql): Promise<MercenariesGlobalStats> => {
 	await allCards.initializeCardsDb();
 	const [lastPatch] = await Promise.all([getLastPatch()]);
+	console.debug('lastPatch', lastPatch);
 
-	const rows: readonly MercenariesDbRow[] = await loadRows(mysql);
+	const rows: readonly MercenariesDbRow[] = await loadRows(mysql, lastPatch);
+	console.debug('total rows', rows.length);
+	const filteredRows = rows.filter(row => row?.result === 'lost' || row?.result === 'won');
+	console.debug('filteredRows', filteredRows.length);
 
 	return {
 		lastUpdateDate: new Date(),
-		pvp: buildPvP(rows.filter(row => row.scenarioId === ScenarioId.LETTUCE_PVP)),
+		pvp: buildPvP(
+			filteredRows.filter(row => row.scenarioId === ScenarioId.LETTUCE_PVP),
+			lastPatch,
+		),
 	};
 };
 
-const buildPvP = (rows: MercenariesDbRow[]): MercenariesPvp => {
+const buildPvP = (rows: MercenariesDbRow[], patch: PatchInfo): MercenariesPvp => {
 	const mmrPercentiles: readonly MmrPercentile[] = buildMmrPercentiles(rows);
 
 	const grouped: { [groupingKey: string]: readonly MercenariesDbRow[] } = groupByFunction(
@@ -34,7 +42,7 @@ const buildPvP = (rows: MercenariesDbRow[]): MercenariesPvp => {
 	)(rows);
 	console.debug('grouped for hero stats');
 	const heroStats: readonly MercenariesHeroStat[] = mmrPercentiles
-		.map(percentile => buildHeroStatsForDifficulty(grouped, percentile))
+		.map(percentile => buildHeroStatsForDifficulty(grouped, percentile, patch))
 		.reduce((a, b) => [...a, ...b], []);
 
 	const groupedByMatch: { [groupingKey: string]: readonly MercenariesDbRow[] } = groupByFunction(
@@ -42,7 +50,7 @@ const buildPvP = (rows: MercenariesDbRow[]): MercenariesPvp => {
 	)(rows);
 	console.debug('grouped for compositions');
 	const compositions: readonly MercenariesComposition[] = mmrPercentiles
-		.map(percentile => buildCompositionsForDifficulty(groupedByMatch, percentile))
+		.map(percentile => buildCompositionsForDifficulty(groupedByMatch, percentile, patch))
 		.reduce((a, b) => [...a, ...b], []);
 
 	return {
@@ -55,6 +63,7 @@ const buildPvP = (rows: MercenariesDbRow[]): MercenariesPvp => {
 const buildHeroStatsForDifficulty = (
 	grouped: { [groupingKey: string]: readonly MercenariesDbRow[] },
 	difficulty: MmrPercentile,
+	patch: PatchInfo,
 ): readonly MercenariesHeroStat[] => {
 	// const pastThree = buildHeroStats(
 	// 	grouped,
@@ -65,17 +74,16 @@ const buildHeroStatsForDifficulty = (
 	// );
 	// console.log('built stats for', 'past-three', difficulty, pastThree.length);
 
-	const pastSeven = buildHeroStats(
+	const lastPatch = buildHeroStats(
 		grouped,
-		row =>
-			row.startDate >= new Date(new Date().getTime() - 7 * 24 * 60 * 60 * 1000) && row.rating >= difficulty.mmr,
+		row => row.startDate >= new Date(patch.date) && row.rating >= difficulty.mmr,
 		difficulty.percentile,
-		'past-seven',
+		'last-patch',
 	);
-	console.log('built stats for', 'past-seven', difficulty, pastSeven.length);
+	console.log('built stats for', 'past-seven', difficulty, lastPatch.length);
 
 	// return [...pastThree, ...pastSeven];
-	return [...pastSeven];
+	return [...lastPatch];
 };
 
 const buildHeroStats = (
@@ -91,7 +99,16 @@ const buildHeroStats = (
 				return null;
 			}
 			const ref = valid[0];
-			const debug = ref.heroCardId.startsWith('LT21_03H_0');
+			const debug = ref.heroCardId.startsWith('LETL_017H_01');
+			// debug &&
+			// 	console.debug(
+			// 		'valid games',
+			// 		valid.length,
+			// 		valid.filter(row => row.result === 'won').length,
+			// 		valid.filter(row => row.result === 'lost').length,
+			// 		valid.filter(row => row.result !== 'lost' && row.result !== 'won').length,
+			// 		valid.filter(row => row.result !== 'lost' && row.result !== 'won')[0],
+			// 	);
 			const uniqueSkills = [
 				...new Set(
 					valid
@@ -134,6 +151,7 @@ const buildHeroStats = (
 const buildCompositionsForDifficulty = (
 	groupedByMatch: { [groupingKey: string]: readonly MercenariesDbRow[] },
 	difficulty: MmrPercentile,
+	patch: PatchInfo,
 ): readonly MercenariesComposition[] => {
 	// const pastThree = buildCompositions(
 	// 	groupedByMatch,
@@ -143,15 +161,14 @@ const buildCompositionsForDifficulty = (
 	// 	'past-three',
 	// );
 	// console.log('built compositions for', 'past-three', difficulty, pastThree.length);
-	const pastSeven = buildCompositions(
+	const lastPatch = buildCompositions(
 		groupedByMatch,
-		row =>
-			row.startDate >= new Date(new Date().getTime() - 7 * 24 * 60 * 60 * 1000) && row.rating >= difficulty.mmr,
+		row => row.startDate >= new Date(patch.date) && row.rating >= difficulty.mmr,
 		difficulty.percentile,
-		'past-seven',
+		'last-patch',
 	);
-	console.log('built compositions for', 'past-seven', difficulty, pastSeven.length);
-	return [...pastSeven];
+	console.log('built compositions for', 'last-patch', difficulty, lastPatch.length);
+	return [...lastPatch];
 	// return [...pastThree, ...pastSeven];
 };
 
@@ -302,7 +319,7 @@ const buildMmrPercentiles = (rows: readonly MercenariesDbRow[]): readonly MmrPer
 	];
 };
 
-const loadRows = async (mysql: ServerlessMysql): Promise<readonly MercenariesDbRow[]> => {
+const loadRows = async (mysql: ServerlessMysql, lastPatch: PatchInfo): Promise<readonly MercenariesDbRow[]> => {
 	// Don't load data that we won't use
 	const query = `
 		SELECT 
@@ -315,7 +332,7 @@ const loadRows = async (mysql: ServerlessMysql): Promise<readonly MercenariesDbR
 			thirdSkillCardId, thirdSkillLevel, thirdSkillNumberOfTimesUsed,
 			bountyId
 		FROM mercenaries_match_stats
-		WHERE startDate > DATE_SUB(NOW(), INTERVAL 30 DAY)
+		WHERE startDate > ${lastPatch.date}
 		AND scenarioId IN (${ScenarioId.LETTUCE_PVP})
 	`;
 	console.log('running query', query);
@@ -325,11 +342,11 @@ const loadRows = async (mysql: ServerlessMysql): Promise<readonly MercenariesDbR
 };
 
 const getLastPatch = async (): Promise<PatchInfo> => {
-	return null;
-	// const patchInfo = await http(`https://static.zerotoheroes.com/hearthstone/data/patches.json?v=2`);
-	// const structuredPatch = JSON.parse(patchInfo);
-	// const patchNumber = structuredPatch.currentMercenariesMetaPatch;
-	// return structuredPatch.patches.find(patch => patch.number === patchNumber);
+	// return null;
+	const patchInfo = await http(`https://static.zerotoheroes.com/hearthstone/data/patches.json`);
+	const structuredPatch = JSON.parse(patchInfo);
+	const patchNumber = structuredPatch.currentMercenariesMetaPatch;
+	return structuredPatch.patches.find(patch => patch.number === patchNumber);
 };
 
 interface PatchInfo {
